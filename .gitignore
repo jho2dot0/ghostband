@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+outputs/
+examples/
+.venv/
+venv/
+.env
+ghostband_plan_debug.json
+ghostband-v0-prompt.md
