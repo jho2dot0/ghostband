@@ -32,7 +32,7 @@ KEYRING_SERVICE = "ghostband"
 ANTHROPIC_USERNAME = "anthropic"
 ELEVENLABS_USERNAME = "elevenlabs"
 
-ANTHROPIC_MODEL = "claude-sonnet-4-5"
+ANTHROPIC_MODEL = "claude-sonnet-4-6"
 ANTHROPIC_MAX_TOKENS = 4096
 
 ELEVENLABS_MODEL_ID = "music_v1"
@@ -125,13 +125,30 @@ The spec is the user's authorial intent. Be aggressive about preserving it.
 
 - If the spec says "light kick on 1 and 3, snare on 3, brushes preferred over sticks," produce three separate verb-phrase tags, not one summarized one.
 - If the spec gives a chord progression, preserve it verbatim as a positive_local_styles entry: `"chord progression: F#m – D – A – E"`.
-- If the spec's References field lists artists, do NOT include the artist names in tags. ElevenLabs' content filter rejects plans that name real musicians. Instead, translate each reference into 1-2 descriptive tags that capture the artist's sonic identity without naming them. Examples:
+- HARD RULE — proper-noun scrub: ElevenLabs' content filter rejects any composition plan that names a real musician, band, song, album, label, or trademarked brand. This rule applies to EVERY tag you emit, in EVERY field (positive_global_styles, negative_global_styles, positive_local_styles, negative_local_styles), regardless of where the name appeared in the spec. The spec's References field is the most common source, but proper nouns can also leak in from Vibe, Notes, Mix notes, or anywhere else.
+
+  Forbidden — never emit a tag that contains:
+  - An artist or band name in ANY form: bare ("Devo"), adjectival ("Devo-era", "Beatles-y", "Springsteen-style"), possessive ("Bowie's chord changes"), or compound ("Blondie Rapture-style groove").
+  - A song or album title ("Rapture", "Kid A", "Songs in the Key of Life") — even in quotes, even hyphenated into a phrase ("Rapture-style groove").
+  - A record label name (Motown, Stax, 4AD, etc.).
+  - A trademarked brand or product name when used as a style shorthand (NES, Nintendo, Game Boy, Roland TR-808 is OK as a generic instrument but "Roland Juno-60 fat lead" is borderline — prefer "fat analog poly-synth lead"). Game-console names should be generalized: NES → chiptune, Sega Genesis → FM-synth chiptune, Game Boy → 4-bit chiptune.
+
+  Translation procedure — for every proper noun anywhere in the spec:
+  1. Identify what the spec is actually pointing at: the era, genre, instrumentation, production style, groove feel, or arrangement convention the artist/song embodies.
+  2. Emit 1-2 evocative tags that describe THOSE qualities, using only generic vocabulary (eras, genres, techniques, instrument names, dynamics, textures).
+  3. Re-read each tag. If a literal artist/band/song name still appears as a substring, rewrite it.
+
+  Examples:
   - "Low (band)" → "slowcore minimalism with sparse instrumentation and emotional depth"
   - "16 Horsepower" → "dark Americana with raw rootsy feel and haunting atmosphere"
   - "Mark Lanegan" → "gritty deep-voiced vocal style with brooding atmosphere"
   - "Nick Cave and the Bad Seeds" → "gothic post-punk with literary lyricism and theatrical menace"
   - "Vangelis Blade Runner score" → "cinematic synth-noir atmosphere with cold electronic beauty"
-  Use your knowledge of each artist's sound to produce evocative style descriptors. Never include the artist's literal name, band name, or album name in any tag.
+  - "Devo-era punk-synth collision" → "angular new-wave punk-synth collision from the early 80s"
+  - "Blondie 'Rapture' groove" → "early-80s rap-disco crossover groove with chant-rap feel"
+  - "NES boss-fight arpeggio" → "chiptune boss-fight arpeggio with square-wave aggression"
+
+  Self-check before finalizing the plan: scan every tag string for any token that looks like a proper noun (capitalized mid-sentence, in quotes, or hyphenated to "-era"/"-style"/"-esque"). If you find one, rewrite that tag. The user would rather have generic-sounding tags than a rejected plan.
 - If the spec's Mix notes mention specific production choices, preserve each as its own tag: `"heavy hall reverb on the organ"`, `"drier mix on guitar and piano"`, `"wide stereo on synth pads"`, `"mono low end"`.
 
 When in doubt, produce MORE tags rather than fewer. ElevenLabs' composition plan can handle many tags per section. The previous parser was producing 5-9 tags per section; you should produce 8-15 verb-phrase tags per section.
@@ -179,7 +196,7 @@ For each section's `duration_ms`, compute from bar count and BPM using the same 
 Build positive_global_styles by combining:
 
 1. The Vibe field, broken into its component verb-phrases (1-3 sentences from the spec → 3-6 tags)
-2. The References field — for each reference, emit 1-2 style-descriptor tags that capture the artist's sound without naming them (see Principle 5 for the rationale and examples)
+2. The References field — for each reference, emit 1-2 style-descriptor tags that capture the artist's sound without naming them. Apply Principle 5's proper-noun scrub to every reference, including adjectival forms like "Devo-era" or "Blondie 'Rapture'-style".
 3. Each item from the spec's "Positive global styles" line as its own tag, but rewritten as a verb-phrase if it's a noun-only term
 4. Each item from the Mix notes, rewritten as a verb-phrase
 5. The three mandatory instrumental tags from Principle 4
