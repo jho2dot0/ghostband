@@ -758,13 +758,14 @@ def write_outputs(
     audio_bytes: bytes,
     song_id: str | None,
     seed: int | None,
-) -> Path:
+) -> tuple[Path, str]:
     timestamp = dt.datetime.now().strftime("%Y-%m-%d_%H%M%S")
     folder_name = f"{timestamp}_{_slug(parsed.metadata.get('artist', ''))}_{_slug(parsed.metadata.get('title', ''))}"
     target = output_dir / folder_name
     target.mkdir(parents=True, exist_ok=True)
 
-    (target / "audio.mp3").write_bytes(audio_bytes)
+    audio_filename = f"Ghostband-{_slug(parsed.metadata.get('title', ''))}.mp3"
+    (target / audio_filename).write_bytes(audio_bytes)
     shutil.copyfile(spec_path, target / "spec.md")
     (target / "plan.json").write_text(
         json.dumps(parsed.composition_plan, indent=2), encoding="utf-8"
@@ -782,7 +783,7 @@ def write_outputs(
     }
     (target / "metadata.json").write_text(json.dumps(metadata_blob, indent=2), encoding="utf-8")
 
-    return target
+    return target, audio_filename
 
 
 # ---------------------------------------------------------------------------
@@ -860,7 +861,7 @@ def main() -> None:
     )
     parsed.composition_plan = used_plan
 
-    target = write_outputs(
+    target, audio_filename = write_outputs(
         args.output_dir, args.spec_file, spec_text, parsed, audio_bytes, song_id, args.seed
     )
 
@@ -868,11 +869,11 @@ def main() -> None:
     duration_s = parsed.metadata.get("total_duration_ms", 0) / 1000.0
     console.print()
     console.print(f"[green]✓ Generated:[/green] {target}/")
-    console.print(f"  Audio: audio.mp3 ({audio_mb:.1f} MB, {int(duration_s)}s)")
+    console.print(f"  Audio: {audio_filename} ({audio_mb:.1f} MB, {int(duration_s)}s)")
     console.print(f"  Seed: {args.seed if args.seed is not None else '(server-assigned)'}")
     console.print(f"  Song ID: {song_id or '(not returned)'}")
     console.print()
-    console.print("Next: upload audio.mp3 to Suno as a cover with your style block and lyrics.")
+    console.print(f"Next: upload {audio_filename} to Suno as a cover with your style block and lyrics.")
 
 
 if __name__ == "__main__":
