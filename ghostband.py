@@ -37,6 +37,9 @@ ANTHROPIC_MAX_TOKENS = 4096
 
 ELEVENLABS_MODEL_ID = "music_v1"
 ELEVENLABS_OUTPUT_FORMAT = "mp3_44100_128"
+# Composition-plan only (added 2026-03-16). Honor each section's duration_ms
+# rather than relying on the API's shifting default.
+ELEVENLABS_RESPECT_SECTIONS_DURATIONS = True
 
 console = Console()
 
@@ -664,6 +667,7 @@ def generate_audio(
         "composition_plan": plan,
         "output_format": ELEVENLABS_OUTPUT_FORMAT,
         "model_id": ELEVENLABS_MODEL_ID,
+        "respect_sections_durations": ELEVENLABS_RESPECT_SECTIONS_DURATIONS,
     }
     if seed is not None:
         kwargs["seed"] = seed
@@ -676,7 +680,7 @@ def generate_audio(
                 getattr(raw_response, "_response", None), "headers", None
             )
             if headers:
-                for key in ("song-id", "x-song-id", "elevenlabs-song-id"):
+                for key in ("song_id", "song-id", "x-song-id", "elevenlabs-song-id"):
                     if key in headers:
                         song_id = headers[key]
                         break
