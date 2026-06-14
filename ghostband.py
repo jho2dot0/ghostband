@@ -564,7 +564,13 @@ def reconcile_durations(plan: dict[str, Any], spec_text: str) -> tuple[int, int 
 # ---------------------------------------------------------------------------
 
 
-def _bars_for_section(duration_ms: int, bpm: int, beats_per_bar: int) -> float:
+def _bars_for_section(duration_ms: float, bpm: float, beats_per_bar: float) -> float:
+    try:
+        duration_ms = float(duration_ms)
+        bpm = float(bpm)
+        beats_per_bar = float(beats_per_bar)
+    except (TypeError, ValueError):
+        return 0.0
     if bpm <= 0 or beats_per_bar <= 0:
         return 0.0
     return duration_ms / 1000.0 / (60.0 / bpm) / beats_per_bar
@@ -583,17 +589,17 @@ def display_plan(result: ParseResult) -> None:
     duration_str = f"{int(duration_s) // 60}:{int(duration_s) % 60:02d}"
 
     metadata_text = Text()
-    metadata_text.append(f"Title: ", style="bold")
+    metadata_text.append("Title: ", style="bold")
     metadata_text.append(f"{md.get('title', '?')}\n")
-    metadata_text.append(f"Artist: ", style="bold")
+    metadata_text.append("Artist: ", style="bold")
     metadata_text.append(f"{md.get('artist', '?')}\n")
-    metadata_text.append(f"Key: ", style="bold")
+    metadata_text.append("Key: ", style="bold")
     metadata_text.append(f"{md.get('key', '?')}    ")
-    metadata_text.append(f"BPM: ", style="bold")
+    metadata_text.append("BPM: ", style="bold")
     metadata_text.append(f"{md.get('bpm', '?')}    ")
-    metadata_text.append(f"Time: ", style="bold")
+    metadata_text.append("Time: ", style="bold")
     metadata_text.append(f"{md.get('time_signature', '?')}    ")
-    metadata_text.append(f"Duration: ", style="bold")
+    metadata_text.append("Duration: ", style="bold")
     metadata_text.append(f"{duration_str} ({int(duration_s)}s)")
     console.print(Panel(metadata_text, title="Metadata", border_style="cyan"))
 
@@ -658,6 +664,22 @@ def _collect_audio_bytes(audio: Any) -> bytes:
     return b"".join(chunks)
 
 
+def _extract_song_id(raw_response: Any) -> str | None:
+    """Best-effort song_id lookup from response headers. Never raises."""
+    try:
+        headers = getattr(raw_response, "headers", None) or getattr(
+            getattr(raw_response, "_response", None), "headers", None
+        )
+        if not headers:
+            return None
+        for key in ("song_id", "song-id", "x-song-id", "elevenlabs-song-id"):
+            if key in headers:
+                return headers[key]
+    except Exception:
+        return None
+    return None
+
+
 def generate_audio(
     plan: dict[str, Any],
     elevenlabs_key: str,
@@ -675,20 +697,21 @@ def generate_audio(
     if seed is not None:
         kwargs["seed"] = seed
 
+    # Prefer the raw-response API so we can read the song_id header, but fall
+    # back to plain compose() if this SDK version lacks with_raw_response.
+    # Resolve the callable BEFORE entering the try so a missing attribute can't
+    # be confused with an AttributeError raised after a successful (billed!)
+    # API call.
+    raw_compose = getattr(
+        getattr(client.music, "with_raw_response", None), "compose", None
+    )
+
     try:
-        with client.music.with_raw_response.compose(**kwargs) as raw_response:
-            audio_bytes = _collect_audio_bytes(raw_response.data)
-            song_id = None
-            headers = getattr(raw_response, "headers", None) or getattr(
-                getattr(raw_response, "_response", None), "headers", None
-            )
-            if headers:
-                for key in ("song_id", "song-id", "x-song-id", "elevenlabs-song-id"):
-                    if key in headers:
-                        song_id = headers[key]
-                        break
-        return audio_bytes, song_id, plan
-    except AttributeError:
+        if raw_compose is not None:
+            with raw_compose(**kwargs) as raw_response:
+                audio_bytes = _collect_audio_bytes(raw_response.data)
+                song_id = _extract_song_id(raw_response)
+            return audio_bytes, song_id, plan
         audio = client.music.compose(**kwargs)
         return _collect_audio_bytes(audio), None, plan
     except ElevenLabsApiError as exc:
