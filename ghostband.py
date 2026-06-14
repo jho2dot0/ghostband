@@ -44,10 +44,11 @@ ELEVENLABS_OUTPUT_FORMAT = "mp3_44100_192"
 # Composition-plan only (added 2026-03-16). Honor each section's duration_ms
 # rather than relying on the API's shifting default.
 ELEVENLABS_RESPECT_SECTIONS_DURATIONS = True
-# Server-side guarantee that no lead vocals are rendered. This is defense in
-# depth alongside PARSER_SYSTEM_PROMPT and strip_vocal_tracks_from_plan, and it
-# enforces the project's instrumental-only invariant at the API boundary.
-ELEVENLABS_FORCE_INSTRUMENTAL = True
+# NOTE: the Music API's `force_instrumental` flag is mutually exclusive with
+# `composition_plan` (the API returns 422 "force_instrumental can only be used
+# with prompt"). Since Ghostband always sends a composition plan, the
+# instrumental-only invariant is enforced upstream by PARSER_SYSTEM_PROMPT and
+# strip_vocal_tracks_from_plan, not by an API flag. Do not re-add it here.
 
 console = Console()
 
@@ -744,7 +745,6 @@ def generate_audio(
 
     kwargs: dict[str, Any] = {
         "composition_plan": plan,
-        "force_instrumental": ELEVENLABS_FORCE_INSTRUMENTAL,
         "output_format": ELEVENLABS_OUTPUT_FORMAT,
         "model_id": ELEVENLABS_MODEL_ID,
         "respect_sections_durations": ELEVENLABS_RESPECT_SECTIONS_DURATIONS,
@@ -898,7 +898,6 @@ def write_outputs(
         "generated_at": dt.datetime.now().isoformat(timespec="seconds"),
         "elevenlabs_model_id": ELEVENLABS_MODEL_ID,
         "elevenlabs_output_format": ELEVENLABS_OUTPUT_FORMAT,
-        "elevenlabs_force_instrumental": ELEVENLABS_FORCE_INSTRUMENTAL,
         "anthropic_model": ANTHROPIC_MODEL,
         "audio_bytes": len(audio_bytes),
     }
