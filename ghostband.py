@@ -14,6 +14,7 @@ import json
 import re
 import shutil
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -36,10 +37,17 @@ ANTHROPIC_MODEL = "claude-sonnet-4-6"
 ANTHROPIC_MAX_TOKENS = 4096
 
 ELEVENLABS_MODEL_ID = "music_v1"
-ELEVENLABS_OUTPUT_FORMAT = "mp3_44100_128"
+# 192 kbps MP3 is the highest the Music API offers for this tier. The output is
+# re-uploaded into Suno as a cover (a second generative pass), so lossy
+# artifacts compound; prefer the highest available bitrate for the source bed.
+ELEVENLABS_OUTPUT_FORMAT = "mp3_44100_192"
 # Composition-plan only (added 2026-03-16). Honor each section's duration_ms
 # rather than relying on the API's shifting default.
 ELEVENLABS_RESPECT_SECTIONS_DURATIONS = True
+# Server-side guarantee that no lead vocals are rendered. This is defense in
+# depth alongside PARSER_SYSTEM_PROMPT and strip_vocal_tracks_from_plan, and it
+# enforces the project's instrumental-only invariant at the API boundary.
+ELEVENLABS_FORCE_INSTRUMENTAL = True
 
 console = Console()
 
@@ -680,16 +688,63 @@ def _extract_song_id(raw_response: Any) -> str | None:
     return None
 
 
+def _detailed_metadata(obj: Any) -> dict[str, Any]:
+    """Coerce a compose_detailed metadata payload into a plain dict. Never raises."""
+    if obj is None:
+        return {}
+    if isinstance(obj, dict):
+        return obj
+    for attr in ("model_dump", "dict"):
+        fn = getattr(obj, attr, None)
+        if callable(fn):
+            try:
+                result = fn()
+                if isinstance(result, dict):
+                    return result
+            except Exception:
+                pass
+    try:
+        return dict(vars(obj))
+    except Exception:
+        return {}
+
+
+def _song_id_from_detailed(meta: dict[str, Any]) -> str | None:
+    """Pull a song_id out of compose_detailed JSON metadata. Never raises."""
+    for key in ("song_id", "songId", "id", "song-id"):
+        value = meta.get(key)
+        if value:
+            return str(value)
+    return None
+
+
+def _error_message(body: Any) -> str:
+    """Coerce an ElevenLabs error envelope into a human string.
+
+    The Music API nests the message inconsistently: sometimes `{"detail": "..."}`,
+    sometimes `{"detail": {"message": ...}}` or `{"detail": {"status": ...}}`.
+    Always return a str so downstream `.lower()` / substring checks are safe.
+    """
+    if not isinstance(body, dict):
+        return str(body) if body else ""
+    detail = body.get("detail", body)
+    if isinstance(detail, dict):
+        return str(detail.get("message") or detail.get("status") or json.dumps(detail))
+    return str(detail) if detail is not None else ""
+
+
 def generate_audio(
     plan: dict[str, Any],
     elevenlabs_key: str,
     seed: int | None,
     allow_suggestion_retry: bool = True,
+    rate_limit_retries: int = 1,
 ) -> tuple[bytes, str | None, dict[str, Any]]:
     client = ElevenLabs(api_key=elevenlabs_key)
 
     kwargs: dict[str, Any] = {
         "composition_plan": plan,
+        "force_instrumental": ELEVENLABS_FORCE_INSTRUMENTAL,
         "output_format": ELEVENLABS_OUTPUT_FORMAT,
         "model_id": ELEVENLABS_MODEL_ID,
         "respect_sections_durations": ELEVENLABS_RESPECT_SECTIONS_DURATIONS,
@@ -697,16 +752,26 @@ def generate_audio(
     if seed is not None:
         kwargs["seed"] = seed
 
-    # Prefer the raw-response API so we can read the song_id header, but fall
-    # back to plain compose() if this SDK version lacks with_raw_response.
-    # Resolve the callable BEFORE entering the try so a missing attribute can't
-    # be confused with an AttributeError raised after a successful (billed!)
-    # API call.
+    # Resolve all optional callables BEFORE entering the try so a missing
+    # attribute can't be confused with an AttributeError raised after a
+    # successful (billed!) API call. Prefer compose_detailed, which returns the
+    # authoritative song_id and used composition plan in JSON metadata; then the
+    # raw-response API (song_id from headers, best effort); then plain compose().
+    compose_detailed = getattr(client.music, "compose_detailed", None)
     raw_compose = getattr(
         getattr(client.music, "with_raw_response", None), "compose", None
     )
 
     try:
+        if compose_detailed is not None:
+            detailed = compose_detailed(**kwargs)
+            audio_bytes = _collect_audio_bytes(getattr(detailed, "audio", detailed))
+            meta = _detailed_metadata(getattr(detailed, "json", None))
+            song_id = _song_id_from_detailed(meta)
+            used_plan = meta.get("composition_plan") or plan
+            if not isinstance(used_plan, dict):
+                used_plan = plan
+            return audio_bytes, song_id, used_plan
         if raw_compose is not None:
             with raw_compose(**kwargs) as raw_response:
                 audio_bytes = _collect_audio_bytes(raw_response.data)
@@ -717,21 +782,50 @@ def generate_audio(
     except ElevenLabsApiError as exc:
         status = getattr(exc, "status_code", None)
         body = getattr(exc, "body", None) or {}
-        message = (body or {}).get("detail") if isinstance(body, dict) else str(body)
+        message = _error_message(body)
         if status == 401:
             console.print("[red]ElevenLabs API key was rejected (401). Re-prompting.[/red]")
             _, fresh_key = load_credentials({"elevenlabs": True})
-            return generate_audio(plan, fresh_key, seed)
-        if status == 402 or (isinstance(message, str) and "credit" in message.lower()):
+            return generate_audio(
+                plan,
+                fresh_key,
+                seed,
+                allow_suggestion_retry=allow_suggestion_retry,
+                rate_limit_retries=rate_limit_retries,
+            )
+        if status == 402 or "credit" in message.lower():
             console.print(f"[red]ElevenLabs: insufficient credits — {message}[/red]")
             sys.exit(2)
         if status == 429:
-            retry_after = ""
+            retry_after_raw = ""
             try:
-                retry_after = exc.headers.get("retry-after", "")  # type: ignore[attr-defined]
+                retry_after_raw = exc.headers.get("retry-after", "")  # type: ignore[attr-defined]
             except Exception:
                 pass
-            console.print(f"[red]ElevenLabs rate limit. Retry after: {retry_after}[/red]")
+            # Honor Retry-After once if it is a small, sane number of seconds.
+            wait_s: float | None = None
+            try:
+                parsed_wait = float(str(retry_after_raw).strip())
+                if 0 <= parsed_wait <= 120:
+                    wait_s = parsed_wait
+            except (TypeError, ValueError):
+                wait_s = None
+            if rate_limit_retries > 0 and wait_s is not None:
+                console.print(
+                    f"[yellow]ElevenLabs rate limit. Waiting {wait_s:.0f}s then "
+                    f"retrying once…[/yellow]"
+                )
+                time.sleep(wait_s)
+                return generate_audio(
+                    plan,
+                    elevenlabs_key,
+                    seed,
+                    allow_suggestion_retry=allow_suggestion_retry,
+                    rate_limit_retries=rate_limit_retries - 1,
+                )
+            console.print(
+                f"[red]ElevenLabs rate limit. Retry after: {retry_after_raw or '(unspecified)'}[/red]"
+            )
             sys.exit(3)
         suggestion = None
         if isinstance(body, dict):
@@ -804,6 +898,7 @@ def write_outputs(
         "generated_at": dt.datetime.now().isoformat(timespec="seconds"),
         "elevenlabs_model_id": ELEVENLABS_MODEL_ID,
         "elevenlabs_output_format": ELEVENLABS_OUTPUT_FORMAT,
+        "elevenlabs_force_instrumental": ELEVENLABS_FORCE_INSTRUMENTAL,
         "anthropic_model": ANTHROPIC_MODEL,
         "audio_bytes": len(audio_bytes),
     }
