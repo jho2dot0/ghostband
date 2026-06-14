@@ -6,4 +6,5 @@ examples/
 venv/
 .env
 ghostband_plan_debug.json
+ghostband_parser_debug.txt
 ghostband-v0-prompt.md

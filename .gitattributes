@@ -1,0 +1,5 @@
+# Normalize line endings so Windows checkouts don't inject CRLF into
+# spec prose / tags (see AGENTS.md "Tags must stay ASCII-clean" invariant).
+* text=auto
+*.py text eol=lf
+*.md text eol=lf

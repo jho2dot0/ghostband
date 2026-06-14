@@ -345,7 +345,10 @@ def read_spec(spec_path: Path) -> str:
     if not spec_path.exists():
         console.print(f"[red]Spec file not found: {spec_path}[/red]")
         sys.exit(1)
-    return spec_path.read_text(encoding="utf-8")
+    text = spec_path.read_text(encoding="utf-8")
+    # Normalize line endings: a Windows checkout (or CRLF spec) would otherwise
+    # carry stray \r control chars into the prose sent to Claude.
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 # ---------------------------------------------------------------------------
